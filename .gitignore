@@ -27,3 +27,10 @@ override.tf.json
 
 # Include tfplan files to ignore the plan output of command: terraform plan -out=tfplan
 # example: *tfplan*
+
+# GOOGLE_CREDENTIALS
+kubermatic.json
+
+# SSH KEYS
+k8s_rsa
+k8s_rsa.pub

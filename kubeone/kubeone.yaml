@@ -1,0 +1,22 @@
+apiVersion: kubeone.k8c.io/v1beta2
+kind: KubeOneCluster
+versions:
+  kubernetes: v1.21.10
+clusterNetwork:
+  cni:
+    external: {}
+cloudProvider:
+  gce: {}
+  cloudConfig: |
+    [global]
+    regional = true
+containerRuntime:
+  containerd: {}
+addons:
+  enable: true
+  path: "./addons"
+  addons:
+    - name: cluster-autoscaler
+    - name: calico-vxlan
+      params:
+        MTU: 1400 # custom MTU

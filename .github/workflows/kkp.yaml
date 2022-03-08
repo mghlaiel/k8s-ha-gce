@@ -1,0 +1,229 @@
+name: "KKP delivery pipeline with GitOps"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'
+      - 'kubeone/**'
+      - 'terraform/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'
+      - 'terraform/**'
+
+# allows to run multiple tests on PR, but only a single run on `main` branch
+concurrency: ci-${{ github.ref }}
+
+jobs:
+  # Run checks on terraform module for k8s
+  terraform-kkp-validate:
+    runs-on: ubuntu-20.04
+    container: quay.io/kubermatic/startio-ci:v0.2.4-0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+      - name: Validate Terraform KubeOne module
+        working-directory: terraform/gce
+        run: |
+          terraform init -backend=false
+          terraform validate
+          terraform fmt -check -write=false
+
+  # Prepares terraform backend (s3 bucket) if not exists
+  terraform-backend-prepare:
+    runs-on: ubuntu-20.04
+    container: quay.io/kubermatic/startio-ci:v0.2.4-0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+      - name: Configure GCP Credentials
+        uses: google-github-actions/auth@v0.4.3
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+      - name: Set up GCP SDK
+        uses: google-github-actions/setup-gcloud@v0.3.0
+      - id: check-terraform-backend
+        name: Check Terraform remote backend
+        env:
+          FILE: bucket-ready
+        run: |
+          gsutil -q stat "gs://tf-state-kkp-z1v35d6oohyp/$FILE" && echo "::set-output name=exists::true" || echo "::set-output name=exists::false"
+      - name: Create Terraform remote backend
+        working-directory: terraform/gce
+        run: ./setup_terraform_backend.sh
+        if: steps.check-terraform-backend.outputs.exists == 'false'
+      - name: Terraform remote backend ready
+        run: echo "Terraform remote backend ready, no action needed"
+        if: steps.check-terraform-backend.outputs.exists == 'true'
+  terraform-init:
+    runs-on: ubuntu-20.04
+    needs:
+      - terraform-backend-prepare
+    container: quay.io/kubermatic/startio-ci:v0.2.4-0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+      - name: Configure GCP Credentials
+        uses: google-github-actions/auth@v0.4.3
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+      - id: check-terraform-run
+        name: Check initial Terraform run
+        working-directory: terraform/gce
+        run: |
+          terraform init
+          terraform output -json kubeone_api && echo "::set-output name=first-run::false" || echo "::set-output name=first-run::true"
+    outputs:
+      first-run: ${{ steps.check-terraform-run.outputs.first-run }}
+
+  # Run terraform plan (using the state from S3)
+  terraform-plan:
+    runs-on: ubuntu-20.04
+    needs:
+      - terraform-kkp-validate
+      - terraform-backend-prepare
+      - terraform-init
+    container: quay.io/kubermatic/startio-ci:v0.2.4-0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+      - name: Prepare SSH deployer keys
+        run: |
+          mkdir ~/.ssh
+          echo ${{ secrets.SSH_PUBLIC_KEY }} > ~/.ssh/k8s_rsa.pub
+          chmod 600 ~/.ssh/k8s_rsa.pub
+      - name: Configure GCP Credentials
+        uses: google-github-actions/auth@v0.4.3
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+      - name: Set initial Terraform variables
+        if: needs.terraform-init.outputs.first-run == 'true'
+        working-directory: terraform/gce
+        run: |
+          echo 'TF_CLI_ARGS_plan="-var=control_plane_target_pool_members_count=1"' >> $GITHUB_ENV
+      - name: Create Terraform plan
+        working-directory: terraform/gce
+        env:
+          TF_CLI_ARGS_plan: ${{ env.TF_CLI_ARGS_plan }}
+        run: |
+          terraform init
+          terraform plan -out=plan.tfplan
+      - name: Upload Terraform plan
+        uses: actions/upload-artifact@v2
+        with:
+          name: plan.tfplan
+          path: terraform/gce/plan.tfplan
+
+  # Run terraform apply to setup k8s infrastructure
+  # Only executed on "push" event
+  terraform-apply:
+    runs-on: ubuntu-20.04
+    needs:
+      - terraform-plan
+    if: ${{ github.event_name == 'push' }}
+    container: quay.io/kubermatic/startio-ci:v0.2.4-0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+      - name: Prepare SSH deployer keys
+        run: |
+          mkdir ~/.ssh
+          echo ${{ secrets.SSH_PUBLIC_KEY }} > ~/.ssh/k8s_rsa.pub
+          chmod 600 ~/.ssh/k8s_rsa.pub
+      - name: Configure GCP Credentials
+        uses: google-github-actions/auth@v0.4.3
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+      - name: Download Terraform plan
+        uses: actions/download-artifact@v2
+        with:
+          name: plan.tfplan
+          path: terraform/gce
+      - name: Apply Terraform plan
+        working-directory: terraform/gce
+        run: |
+          terraform init
+          terraform apply -auto-approve plan.tfplan
+
+  # Provisions / update the k8s cluster with KubeOne
+  # Only executed on "push" event
+  kubeone-apply:
+    runs-on: ubuntu-20.04
+    needs:
+      - terraform-apply
+      - terraform-init
+    if: ${{ github.event_name == 'push' }}
+    container: quay.io/kubermatic/startio-ci:v0.2.4-0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+      - name: Prepare SSH agent
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Configure GCP Credentials
+        uses: google-github-actions/auth@v0.4.3
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+      - name: Retrieve Terraform output
+        working-directory: terraform/gce
+        run: |
+          terraform init
+          terraform output -json > output.json
+      - name: Provision/update cluster with KubeOne
+        working-directory: kubeone
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          kubeone apply -m kubeone.yaml -t ../terraform/gce/output.json -y -v
+      - name: Prepare SSH deployer keys
+        if: needs.terraform-init.outputs.first-run == 'true'
+        run: |
+          mkdir ~/.ssh
+          echo ${{ secrets.SSH_PUBLIC_KEY }} > ~/.ssh/k8s_rsa.pub
+          chmod 600 ~/.ssh/k8s_rsa.pub
+      - name: Apply Terraform plan
+        if: needs.terraform-init.outputs.first-run == 'true'
+        working-directory: terraform/gce
+        run: |
+          terraform init
+          terraform apply -auto-approve
+
+  # Installs KKP using installer and additional resources for KKP and Flux
+  # Only executed on "push" event
+  Prepare kubernetes nodes:
+    runs-on: ubuntu-20.04
+    needs:
+      - kubeone-apply
+    if: ${{ github.event_name == 'push' }}
+    container: quay.io/kubermatic/startio-ci:v0.2.4-0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+      - name: Prepare SSH agent
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Configure GCP Credentials
+        uses: google-github-actions/auth@v0.4.3
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+      - name: Retrieve Terraform output
+        working-directory: terraform/gce
+        run: |
+          terraform init
+          terraform output -json > output.json
+      - name: Retrieve kubeconfig of KubeOne cluster
+        working-directory: kubeone
+        run: |
+          kubeone kubeconfig -m kubeone.yaml -t ../terraform/gce/output.json > kubeconfig
+      - name: node taint
+        env:
+          KUBECONFIG: kubeone/kubeconfig
+        run: |
+          kubectl taint nodes --all node-role.kubernetes.io/master-
+          
