@@ -13,7 +13,6 @@ on:
       - main
     paths:
       - '.github/workflows/**'
-      - 'kubeone/**'
       - 'terraform/**'
 
 # allows to run multiple tests on PR, but only a single run on `main` branch
@@ -34,7 +33,7 @@ jobs:
           terraform validate
           terraform fmt -check -write=false
 
-  # Prepares terraform backend (s3 bucket) if not exists
+  # Prepares terraform backend if not exists
   terraform-backend-prepare:
     runs-on: ubuntu-20.04
     container: quay.io/kubermatic/startio-ci:v0.2.4-0
@@ -46,7 +45,7 @@ jobs:
         with:
           credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
       - name: Set up GCP SDK
-        uses: google-github-actions/setup-gcloud@v0.3.0
+        uses: google-github-actions/setup-gcloud@v0.5.1
       - id: check-terraform-backend
         name: Check Terraform remote backend
         env:
