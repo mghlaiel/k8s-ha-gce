@@ -1,4 +1,4 @@
-name: "KKP delivery pipeline with GitOps"
+name: "kubernetes setup on GCE with GitHub actions"
 
 on:
   push:
@@ -13,6 +13,7 @@ on:
       - main
     paths:
       - '.github/workflows/**'
+      - 'kubeone/**'
       - 'terraform/**'
 
 # allows to run multiple tests on PR, but only a single run on `main` branch
