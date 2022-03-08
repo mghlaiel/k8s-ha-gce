@@ -15,4 +15,8 @@ addons:
   path: "./addons"
   addons:
     - name: cluster-autoscaler
+    - name: calico-vxlan
+      params:
+        MTU: "1410"
+    - name: metrics-server
     
