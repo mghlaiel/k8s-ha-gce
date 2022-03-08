@@ -196,7 +196,7 @@ jobs:
 
   # Installs KKP using installer and additional resources for KKP and Flux
   # Only executed on "push" event
-  Prepare kubernetes nodes:
+  Prepare-kubernetes-nodes:
     runs-on: ubuntu-20.04
     needs:
       - kubeone-apply
