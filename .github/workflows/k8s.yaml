@@ -1,4 +1,4 @@
-name: "kubernetes setup on GCE with GitHub actions"
+name: "Provision HA kubernetes with GitHub actions"
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
           terraform validate
           terraform fmt -check -write=false
 
-  # Prepares terraform backend if not exists
+  # Prepares terraform backend (s3 bucket) if not exists
   terraform-backend-prepare:
     runs-on: ubuntu-20.04
     container: quay.io/kubermatic/startio-ci:v0.2.4-0
@@ -192,38 +192,3 @@ jobs:
         run: |
           terraform init
           terraform apply -auto-approve
-
-  # Installs KKP using installer and additional resources for KKP and Flux
-  # Only executed on "push" event
-  Prepare-kubernetes-nodes:
-    runs-on: ubuntu-20.04
-    needs:
-      - kubeone-apply
-    if: ${{ github.event_name == 'push' }}
-    container: quay.io/kubermatic/startio-ci:v0.2.4-0
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v2
-      - name: Prepare SSH agent
-        uses: webfactory/ssh-agent@v0.5.3
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-      - name: Configure GCP Credentials
-        uses: google-github-actions/auth@v0.4.3
-        with:
-          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
-      - name: Retrieve Terraform output
-        working-directory: terraform/gce
-        run: |
-          terraform init
-          terraform output -json > output.json
-      - name: Retrieve kubeconfig of KubeOne cluster
-        working-directory: kubeone
-        run: |
-          kubeone kubeconfig -m kubeone.yaml -t ../terraform/gce/output.json > kubeconfig
-      - name: node taint
-        env:
-          KUBECONFIG: kubeone/kubeconfig
-        run: |
-          kubectl taint nodes --all node-role.kubernetes.io/master-
-          
