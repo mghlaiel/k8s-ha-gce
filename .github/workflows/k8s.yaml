@@ -45,7 +45,7 @@ jobs:
         with:
           credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
       - name: Set up GCP SDK
-        uses: google-github-actions/setup-gcloud@v0.3.0
+        uses: google-github-actions/setup-gcloud@v0.3.1
       - id: check-terraform-backend
         name: Check Terraform remote backend
         env:
